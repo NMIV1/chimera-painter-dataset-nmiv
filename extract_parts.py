@@ -17,6 +17,7 @@ MIN_PIXEL_COUNT = 5
 DENSITY_THRESHOLD = 0.3  # Minimum density of the mask to be considered valid
 SAVE_PROGRESS = True
 DELETE_PREVIOUS_OUTPUT = False
+MAX_PROCESS = 150
 
 
 output_dir = r"parts_output"
@@ -31,13 +32,6 @@ logs = False
 logs2 = False
 logs3 = False
 completed_files = set()
-
-if SAVE_PROGRESS:
-    if os.path.exists(LOG_CSV):
-        with open(LOG_CSV, "r") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                completed_files.add(row[0])
 
 # Mapping of part names to their RGB colors in segmentation maps
 PART_COLORS = {
@@ -272,7 +266,7 @@ def process_all(dataset_dir: str, output_dir: str, workers: int = 4):
     seg_files = [f for f in all_files if f.startswith(zip_seg_prefix)  and f.endswith(".png")]
     img_files = [f for f in all_files if f.startswith(zip_img_prefix)  and f.endswith(".png")]
 
-    for img_path in tqdm(img_files[:10], desc="Building arg list", unit="file"):
+    for img_path in tqdm(img_files[:MAX_PROCESS], desc="Building arg list", unit="file"):
         name = os.path.basename(img_path)
         seg_path = zip_seg_prefix + name
         if seg_path in seg_files:
@@ -318,5 +312,10 @@ if __name__ == "__main__":
             with open(LOG_CSV, "w", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow(["File Name", "Parts Found"])
+        else:
+            with open(LOG_CSV, "r") as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    completed_files.add(row[0])
 
     process_all(dataset_dir, output_dir, workers)
