@@ -1,0 +1,14 @@
+Upper Back Legs
+Ears
+Head
+Neck
+Torso Front
+Eyes
+Torso Back
+Lower Front Legs
+Upper Front Legs
+Foot Top
+Lower Back Legs
+Nose
+Foot Bottom
+Muzzle

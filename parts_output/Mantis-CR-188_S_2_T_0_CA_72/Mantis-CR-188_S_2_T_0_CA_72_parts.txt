@@ -1,0 +1,14 @@
+Upper Back Legs
+Neck
+Claws
+Upper Front Legs
+Eyes
+Wing
+Teeth
+Lower Back Legs
+Torso Back
+Muzzle
+Torso Front
+Lower Front Legs
+Tail
+Head

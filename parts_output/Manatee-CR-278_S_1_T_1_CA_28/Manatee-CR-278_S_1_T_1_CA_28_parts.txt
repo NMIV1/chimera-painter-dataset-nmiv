@@ -1,0 +1,11 @@
+Mouth
+Head
+Wing
+Eyes
+Neck
+Nose
+Muzzle
+Torso Back
+Tail
+Torso Front
+Horns
