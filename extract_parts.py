@@ -7,30 +7,36 @@ import cv2
 from tqdm import tqdm
 import csv
 import zipfile, io
+from concurrent.futures import as_completed
+import traceback
 
 # Current Issues:
 # Small parts are hard to select
+# I didn't optimize much
 
 # PARAMETERS
 # Set the parameters for the extraction process
 MIN_PIXEL_COUNT = 5
 DENSITY_THRESHOLD = 0.3  # Minimum density of the mask to be considered valid
-SAVE_PROGRESS = True
-DELETE_PREVIOUS_OUTPUT = False
-MAX_PROCESS = 150
+SAVE_PROGRESS = False
+DELETE_PREVIOUS_OUTPUT = True
+MAX_PROCESS = 10000
+PROCESS_RANDOM = True  # If True and not TEST, will process images in random order
+WORKERS = 4
+TEST = True  # If True, will only process the first 10 files
 
 
 output_dir = r"parts_output"
 LOG_CSV = os.path.join(output_dir, r"processed.csv")
 # seg_dir = r"D:\PN\chimera-painter-dataset.zip\chimera-art/segmap"
 # img_dir = r"D:\PN\chimera-painter-dataset.zip\chimera-art/image"
-zip_seg_prefix  = "chimera-art/segmap/"
-zip_img_prefix  = "chimera-art/image/"
+zip_seg_prefix = "chimera-art/segmap/"
+zip_img_prefix = "chimera-art/image/"
 dataset_dir = r"D:\PN\chimera-painter-dataset.zip"
-workers = 4
 logs = False
 logs2 = False
 logs3 = False
+logs4 = True
 completed_files = set()
 
 # Mapping of part names to their RGB colors in segmentation maps
@@ -60,8 +66,8 @@ PART_COLORS = {
 }
 
 PART_TOPN = {
-    "Ground": 1,
-    "Background": 1,
+    "Ground": 0,
+    "Background": 0,
     "Head": 1,
     "Muzzle": 2,
     "Eyes": 1,
@@ -71,16 +77,16 @@ PART_TOPN = {
     "Ears": 1,
     "Horns": 1,
     "Neck": 1,
-    "Wing": 1,
+    "Wing": 2,
     "Torso Front": 1,
     "Torso Back": 1,
-    "Upper Front Legs": 1,
-    "Upper Back Legs": 1,
-    "Lower Front Legs": 1,
-    "Lower Back Legs": 1,
-    "Foot Top": 1,
-    "Foot Bottom": 1,
-    "Claws": 1,
+    "Upper Front Legs": 2,
+    "Upper Back Legs": 2,
+    "Lower Front Legs": 2,
+    "Lower Back Legs": 2,
+    "Foot Top": 2,
+    "Foot Bottom": 2,
+    "Claws": 2,
     "Tail": 1,
 }
 
@@ -88,7 +94,7 @@ PART_TOPN = {
 # Returns parts found and not found in the segmentation map
 def extract_parts(seg_path: str, img_path: str, output_dir: str) -> list:
 
-    with zipfile.ZipFile(dataset_dir, "r") as zf:
+    with zipfile.ZipFile(dataset_dir, "r") as zf:  # Maybe we should read in batches
         seg_data = zf.read(seg_path)
         img_data = zf.read(img_path)
 
@@ -137,7 +143,7 @@ def extract_parts(seg_path: str, img_path: str, output_dir: str) -> list:
         # Save the part image
         part_dir = os.path.join(output_dir, file_name)
         os.makedirs(part_dir, exist_ok=True)
-        part_img.save(os.path.join(part_dir, f"{file_name}_{part}.png"))
+        part_img.save(os.path.join(part_dir, f"{file_name}_{part.replace(' ', '_')}.png"))
 
     # save text file with parts found
     parts_found = list(set(parts_found))  # Remove duplicates
@@ -167,54 +173,53 @@ def mask_select(
 
     if part == "Foot Top" or part == "Foot Bottom" or part == "Claws":
         parts_to_select = ["Foot Top", "Foot Bottom", "Claws"]
-    if (
-        part == "Head"
-        or part == "Muzzle"
-        or part == "Eyes"
-        or part == "Nose"
-        or part == "Mouth"
-        or part == "Teeth"
-    ):
-        parts_to_select = ["Head", "Muzzle", "Eyes", "Nose", "Mouth", "Teeth"]
+        parts_found.extend(parts_to_select)
+    if part == "Head":
+        parts_to_select = ["Head", "Muzzle", "Eyes", "Nose", "Mouth", "Teeth", "Ears"]
     if part == "Torso Front" or part == "Torso Back":
-        parts_to_select = ["Torso Front", "Torso Back"]
+        parts_to_select = [
+            "Torso Front",
+            "Torso Back",
+            "Upper Front Legs",
+            "Upper Back Legs",
+            "Lower Front Legs",
+            "Lower Back Legs",
+        ]
+        parts_found.append("Torso Front")
+        parts_found.append("Torso Back")
+    if part == "Neck":
+        parts_to_select = ["Neck", "Torso Front", "Torso Back"]
     if part == "Background" or part == "Ground":
         return None, None
+    if part == "Muzzle" or part == "Nose" or part == "Mouth" or part == "Teeth":
+        parts_to_select = ["Muzzle", "Nose", "Mouth", "Teeth"]
+        parts_found.extend(parts_to_select)
 
     H, W = seg_array.shape[:2]
     mask = np.zeros((H, W), dtype=bool)
 
-    for p in parts_to_select:
-        if p in parts_found or p not in PART_COLORS:
-            continue
+    valid_colors = [PART_COLORS[p] for p in parts_to_select]
+    valid_vals = np.array(
+        [(r << 16) | (g << 8) | b for (r, g, b) in valid_colors], dtype=np.uint32
+    )
 
-        part_mask = np.all(seg_array == PART_COLORS[p], axis=-1)
+    r = seg_array[:, :, 0].astype(np.uint32)
+    g = seg_array[:, :, 1].astype(np.uint32)
+    b = seg_array[:, :, 2].astype(np.uint32)
+    encoded = (r << 16) | (g << 8) | b
 
-        if not part_mask.any():
-            if logs2:
-                print(f"{p} not found in {part}.")
-            continue
-
-        if not check_if_clean(part_mask):
-            part_mask = clean_mask(part_mask, top_n=PART_TOPN[p])
-
-        if not part_mask.any():
-            if logs2:
-                print(f"{p} not found in {part}.")
-            continue
-
-        parts_found.append(p)
-
-        try:
-            # combine
-            mask |= part_mask  # in‐place OR is a bit cleaner
-        except Exception as e:
-            if logs2:
-                print(f"[ERROR] OR failed for part {p}: {e}", flush=True)
+    mask = np.isin(encoded, valid_vals)
 
     if not mask.any():
         return None, None
 
+    if not check_if_clean(mask):
+        mask = clean_mask(mask, top_n=PART_TOPN[part])
+
+    if not mask.any():
+        return None, None
+
+    parts_found.append(part) # before we were appending all selected parts
     return mask, parts_found
 
 
@@ -231,7 +236,7 @@ def check_if_clean(mask: np.ndarray) -> bool:
     return True
 
 
-def clean_mask(mask: np.ndarray, top_n = 1) -> np.ndarray:
+def clean_mask(mask: np.ndarray, top_n=1) -> np.ndarray:
     mask_uint8 = mask.astype(np.uint8) * 255
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     mask_open = cv2.morphologyEx(mask_uint8, cv2.MORPH_OPEN, kernel)
@@ -247,11 +252,11 @@ def clean_mask(mask: np.ndarray, top_n = 1) -> np.ndarray:
 
     # get inices of the top N largest areas
     top_n_indices = np.argsort(areas)[-top_n:]
-    top_n_labels = {i+1 for i in top_n_indices}
+    top_n_labels = {i + 1 for i in top_n_indices}
 
     mask_final = np.zeros_like(mask, dtype=bool)
     for label in top_n_labels:
-        mask_final |= (labels == label)
+        mask_final |= labels == label
 
     return mask_final
 
@@ -263,37 +268,86 @@ def process_all(dataset_dir: str, output_dir: str, workers: int = 4):
     with zipfile.ZipFile(dataset_dir, "r") as zf:
         all_files = zf.namelist()
 
-    seg_files = [f for f in all_files if f.startswith(zip_seg_prefix)  and f.endswith(".png")]
-    img_files = [f for f in all_files if f.startswith(zip_img_prefix)  and f.endswith(".png")]
+        if PROCESS_RANDOM and not TEST:
+            np.random.shuffle(all_files)
 
-    for img_path in tqdm(img_files[:MAX_PROCESS], desc="Building arg list", unit="file"):
-        name = os.path.basename(img_path)
-        seg_path = zip_seg_prefix + name
-        if seg_path in seg_files:
+    path_pairs = {}
+
+    for file in tqdm(all_files, desc="Finding files", unit="file"):
+        if not file.endswith(".png"):
+            continue
+
+        if file.startswith(zip_seg_prefix):
+            name = os.path.basename(file)
+            seg_path = f"{zip_seg_prefix}{name}"
+            img_path = f"{zip_img_prefix}{name}"
+            if img_path in path_pairs:
+                path_pairs[img_path] = seg_path
+            elif seg_path in path_pairs:
+                path_pairs[seg_path] = img_path
+            else:
+                path_pairs[seg_path] = ""
+        elif file.startswith(zip_img_prefix):
+            name = os.path.basename(file)
+            seg_path = f"{zip_seg_prefix}{name}"
+            img_path = f"{zip_img_prefix}{name}"
+            if img_path in path_pairs:
+                path_pairs[img_path] = seg_path
+            elif seg_path in path_pairs:
+                path_pairs[seg_path] = img_path
+            else:
+                path_pairs[img_path] = ""
+
+    for path_1, path_2 in tqdm(
+        path_pairs.items(), desc="Building arg list", unit="file"
+    ):
+        if path_1 and path_2:
+            seg_path = ""
+            img_path = ""
+
+            if path_1[: len(zip_seg_prefix)] == zip_seg_prefix:
+                seg_path = path_1
+                img_path = path_2
+            else:
+                seg_path = path_2
+                img_path = path_1
+
             args_list.append((seg_path, img_path, output_dir))
-        else:
-            if logs:
-                print(f"Segmentation map not found for {name}. Skipping.")
+
+    if len(args_list) > MAX_PROCESS:
+        args_list = args_list[:MAX_PROCESS]
+
+    if TEST:
+        args_list = args_list[:10]
+        print(f"TEST mode: processing only {len(args_list)} images.")
+        if logs3:
+            print(args_list)
 
     total = len(args_list)
+
     # parallel processing
-    print(f"Processing {len(args_list)} images with {workers} workers.")
+    print(f"Processing {total} images with {workers} workers.")
     with ProcessPoolExecutor(max_workers=workers) as executor:
         if not logs and not logs2 and not logs3:
             futures = [
-                executor.submit(extract_parts, seg, img, out) for seg, img, out in args_list
+                executor.submit(extract_parts, seg_path, img_path, output_dir)
+                for seg_path, img_path, output_dir in args_list
             ]
 
             for future in tqdm(
-                futures,
-                total=total,
+                as_completed(futures),
+                total=len(futures),
                 desc="Processing images",
                 unit="image",
+                mininterval=0.5,  # update at least every 0.5 s
+                smoothing=0.1,  # smoother speed estimate
             ):
                 try:
                     future.result()
                 except Exception as e:
-                        print(f"[ERROR] {e}", flush=True)
+                    print(f"[ERROR] {e}", flush=True)
+                    if TEST and logs4:
+                        traceback.print_exc()
         else:
             executor.map(extract_parts, *zip(*args_list))
 
@@ -306,7 +360,7 @@ if __name__ == "__main__":
 
     os.makedirs(output_dir, exist_ok=True)
 
-    #create log file if it doesn't exist
+    # create log file if it doesn't exist
     if SAVE_PROGRESS:
         if not os.path.exists(LOG_CSV):
             with open(LOG_CSV, "w", newline="") as f:
@@ -318,4 +372,4 @@ if __name__ == "__main__":
                 for row in reader:
                     completed_files.add(row[0])
 
-    process_all(dataset_dir, output_dir, workers)
+    process_all(dataset_dir, output_dir, WORKERS)
