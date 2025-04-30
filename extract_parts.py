@@ -310,7 +310,6 @@ if __name__ == "__main__":
         if os.path.exists(output_dir):
             shutil.rmtree(output_dir)
 
-    # Re-create a clean output directory
     os.makedirs(output_dir, exist_ok=True)
 
     #create log file if it doesn't exist
@@ -320,5 +319,4 @@ if __name__ == "__main__":
                 writer = csv.writer(f)
                 writer.writerow(["File Name", "Parts Found"])
 
-    # Process all images and segmentation maps
     process_all(dataset_dir, output_dir, workers)
