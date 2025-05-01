@@ -18,12 +18,12 @@ import traceback
 # Set the parameters for the extraction process
 MIN_PIXEL_COUNT = 5
 DENSITY_THRESHOLD = 0.3  # Minimum density of the mask to be considered valid
-SAVE_PROGRESS = False
-DELETE_PREVIOUS_OUTPUT = True
-MAX_PROCESS = 10000
+SAVE_PROGRESS = True # if not test
+DELETE_PREVIOUS_OUTPUT = False
+MAX_PROCESS = 999999
 PROCESS_RANDOM = True  # If True and not TEST, will process images in random order
 WORKERS = 4
-TEST = True  # If True, will only process the first 10 files
+TEST = False  # If True, will only process the first 10 files
 
 
 output_dir = r"parts_output"
@@ -36,7 +36,7 @@ dataset_dir = r"D:\PN\chimera-painter-dataset.zip"
 logs = False
 logs2 = False
 logs3 = False
-logs4 = True
+logs4 = False
 completed_files = set()
 
 # Mapping of part names to their RGB colors in segmentation maps
@@ -152,7 +152,7 @@ def extract_parts(seg_path: str, img_path: str, output_dir: str) -> list:
             f.write(f"{part}\n")
 
     # record file processed
-    if SAVE_PROGRESS:
+    if SAVE_PROGRESS and not TEST:
         completed_files.add(file_name)
         with open(LOG_CSV, "a", newline="") as f:
             writer = csv.writer(f)
@@ -327,29 +327,23 @@ def process_all(dataset_dir: str, output_dir: str, workers: int = 4):
 
     # parallel processing
     print(f"Processing {total} images with {workers} workers.")
+    bar = tqdm(total=total, desc="Processing images", unit="img", mininterval=0.5)
     with ProcessPoolExecutor(max_workers=workers) as executor:
         if not logs and not logs2 and not logs3:
-            futures = [
-                executor.submit(extract_parts, seg_path, img_path, output_dir)
-                for seg_path, img_path, output_dir in args_list
-            ]
+            futures = []
+            for seg, img, out in args_list:
+                fut = executor.submit(extract_parts, seg, img, out)
+                # whenever a task finishes, bump the bar by 1
+                fut.add_done_callback(lambda _f: bar.update(1))
+                futures.append(fut)
 
-            for future in tqdm(
-                as_completed(futures),
-                total=len(futures),
-                desc="Processing images",
-                unit="image",
-                mininterval=0.5,  # update at least every 0.5 s
-                smoothing=0.1,  # smoother speed estimate
-            ):
+            for fut in futures:
                 try:
-                    future.result()
+                    fut.result()
                 except Exception as e:
-                    print(f"[ERROR] {e}", flush=True)
-                    if TEST and logs4:
-                        traceback.print_exc()
-        else:
-            executor.map(extract_parts, *zip(*args_list))
+                    tqdm.write(f"[ERROR] {e}")
+
+    bar.close()
 
 
 if __name__ == "__main__":
