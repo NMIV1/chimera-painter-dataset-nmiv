@@ -93,17 +93,17 @@ PART_TOPN = {
 
 # Returns parts found and not found in the segmentation map
 def extract_parts(seg_path: str, img_path: str, output_dir: str) -> list:
-
-    with zipfile.ZipFile(dataset_dir, "r") as zf:  # Maybe we should read in batches
-        seg_data = zf.read(seg_path)
-        img_data = zf.read(img_path)
-
     # Check if the file has already been processed
     file_name = os.path.basename(img_path).split(".")[0]
     if file_name in completed_files:
         if logs:
             print(f"File {file_name} already processed. Skipping.")
         return None
+
+    with zipfile.ZipFile(dataset_dir, "r") as zf:  # Maybe we should read in batches
+        seg_data = zf.read(seg_path)
+        img_data = zf.read(img_path)
+
 
     # Load images
     seg_img = Image.open(io.BytesIO(seg_data)).convert("RGB")
